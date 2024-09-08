@@ -1,0 +1,12 @@
+[Unit]
+Description=Serial Monitor Service
+After=network.target
+
+[Service]
+ExecStart=/opt/edge-privacy-switch/venv/bin/python /opt/edge-privacy-switch/edge-privacy-switch/edge-privacy-switch-agent.py
+Restart=always
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
