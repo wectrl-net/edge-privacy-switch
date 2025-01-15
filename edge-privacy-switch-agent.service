@@ -1,12 +1,22 @@
 [Unit]
-Description=Serial Monitor Service
+Description=Edge Privacy Switch Agent
 After=network.target
+Wants=network.target
 
 [Service]
-ExecStart=/opt/edge-privacy-switch/venv/bin/python /opt/edge-privacy-switch/edge-privacy-switch/edge-privacy-switch-agent.py
+Type=simple
+ExecStart=/opt/edge-privacy-switch/venv/bin/python /opt/edge-privacy-switch/edge-privacy-switch/edge-privacy-switch-agent.py --config /opt/edge-privacy-switch/edge-privacy-switch/config.yaml
 Restart=always
+RestartSec=5
 User=root
 Group=root
+WorkingDirectory=/opt/edge-privacy-switch
+
+# Create and set permissions for state directory
+PermissionsStartOnly=true
+ExecStartPre=/bin/mkdir -p /var/lib/edge-privacy-switch
+ExecStartPre=/bin/chown root:root /var/lib/edge-privacy-switch
+ExecStartPre=/bin/chmod 755 /var/lib/edge-privacy-switch
 
 [Install]
 WantedBy=multi-user.target

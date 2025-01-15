@@ -6,6 +6,20 @@ serial:
   # Leave empty to auto-detect
   port: ""
 
+# State file settings
+state:
+  file_path: "/var/lib/edge-privacy-switch/state"
+
+# MQTT Settings for ESPHome communication
+mqtt:
+  enabled: true
+  broker: "localhost"
+  port: 1883
+  username: ""
+  password: ""
+  topic: "privacy_switch/state"
+  client_id: "edge-privacy-switch"
+
 # Actions to perform when privacy switch is enabled/disabled
 actions:
   iptables:

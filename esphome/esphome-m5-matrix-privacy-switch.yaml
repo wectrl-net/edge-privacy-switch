@@ -42,10 +42,26 @@ uart:
   rx_pin: GPIO3
   baud_rate: 115200
   debug:
-    # direction: BOTH
-    # dummy_receiver: true
     after:
       delimiter: "\n"
+  on_message:
+    # Handle GET_STATE command
+    - pattern: "GET_STATE"
+      then:
+        - lambda: |-
+            bool state = id(privacy_switch).state;
+            id(uart_bus).write_str(("STATE:" + std::string(state ? "ON" : "OFF") + "\n").c_str());
+
+    # Handle ACK messages
+    - pattern: "ACK:(ON|OFF)"
+      then:
+        - lambda: |-
+            std::string message = id(uart_bus).get_message();
+            if (message.find("ACK:ON") != std::string::npos && !id(privacy_switch).state) {
+              id(privacy_switch).turn_on();
+            } else if (message.find("ACK:OFF") != std::string::npos && id(privacy_switch).state) {
+              id(privacy_switch).turn_off();
+            }
 
 sensor:
   - platform: wifi_signal

@@ -6,6 +6,9 @@ import argparse
 import logging
 import yaml
 from pathlib import Path
+import paho.mqtt.client as mqtt
+import json
+import datetime
 
 # Set up logging
 logging.basicConfig(
@@ -151,10 +154,103 @@ def set_iptables_rule(enable, config):
 def reboot_host():
     subprocess.call(["shutdown", "-r", "-t", "now"])
 
+def ensure_state_directory(file_path):
+    """Ensure the directory for the state file exists"""
+    directory = os.path.dirname(file_path)
+    if directory and not os.path.exists(directory):
+        try:
+            os.makedirs(directory, exist_ok=True)
+            logger.info(f"Created state directory: {directory}")
+        except Exception as e:
+            logger.error(f"Failed to create state directory: {e}")
+
+def update_state_file(state, config):
+    """Update the state file with current privacy switch status"""
+    try:
+        state_file = config['state']['file_path']
+        ensure_state_directory(state_file)
+        
+        state_data = {
+            'privacy_enabled': state == 'ON',
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        
+        with open(state_file, 'w') as f:
+            json.dump(state_data, f)
+        logger.info(f"Updated state file: privacy_enabled={state_data['privacy_enabled']}")
+    except Exception as e:
+        logger.error(f"Failed to update state file: {e}")
+
+class MQTTClient:
+    def __init__(self, config):
+        self.config = config['mqtt']
+        self.client = None
+        if not self.config.get('enabled', False):
+            logger.info("MQTT updates are disabled in configuration")
+            return
+        
+        try:
+            self.client = mqtt.Client(self.config.get('client_id', 'edge-privacy-switch'))
+            if self.config.get('username'):
+                self.client.username_pw_set(
+                    self.config['username'],
+                    self.config.get('password', '')
+                )
+            
+            self.client.on_connect = self.on_connect
+            self.client.on_disconnect = self.on_disconnect
+            
+            self.connect()
+        except Exception as e:
+            logger.error(f"Failed to initialize MQTT client: {e}")
+            self.client = None
+
+    def connect(self):
+        if not self.client:
+            return
+            
+        try:
+            self.client.connect(
+                self.config.get('broker', 'localhost'),
+                self.config.get('port', 1883)
+            )
+            self.client.loop_start()
+        except Exception as e:
+            logger.error(f"Failed to connect to MQTT broker: {e}")
+            self.client = None
+
+    def on_connect(self, client, userdata, flags, rc):
+        if rc == 0:
+            logger.info("Connected to MQTT broker")
+        else:
+            logger.error(f"Failed to connect to MQTT broker with code {rc}")
+
+    def on_disconnect(self, client, userdata, rc):
+        logger.warning("Disconnected from MQTT broker")
+        if rc != 0:
+            logger.error(f"Unexpected disconnection, trying to reconnect...")
+            self.connect()
+
+    def update_state(self, state):
+        if not self.client or not self.config.get('enabled', False):
+            return
+            
+        try:
+            payload = "ON" if state == "ON" else "OFF"
+            self.client.publish(self.config['topic'], payload, retain=True)
+            logger.info(f"Published state {payload} to MQTT")
+        except Exception as e:
+            logger.error(f"Failed to publish MQTT update: {e}")
+
 def monitor_serial(serial_port, config):
     try:
         ser = serial.Serial(serial_port, config['serial']['baud_rate'])
         logger.info(f"Serial connection established on {serial_port} at {config['serial']['baud_rate']} baud.")
+        mqtt_client = MQTTClient(config)
+        
+        # Send initial state request to ESPHome device
+        ser.write(b"GET_STATE\n")
+        logger.info("Sent initial state request to device")
     except serial.SerialException as e:
         logger.error(f"Failed to open serial port {serial_port}: {e}")
         return
@@ -165,14 +261,37 @@ def monitor_serial(serial_port, config):
         try:
             line = ser.readline().decode('utf-8').strip()
             logger.debug(f"Serial line received: {line}")
-            if 'Privacy Switch: ON' in line and current_state != 'ON':
+            
+            # Handle state responses
+            if line.startswith("STATE:"):
+                state = line.split(":")[1].strip()
+                if state in ["ON", "OFF"] and current_state != state:
+                    logger.info(f"Received state from device: {state}")
+                    current_state = state
+                    if state == "ON":
+                        set_iptables_rule(enable=False, config=config)
+                    else:
+                        set_iptables_rule(enable=True, config=config)
+                    update_state_file(current_state, config)
+                    mqtt_client.update_state(current_state)
+            
+            # Handle state change notifications
+            elif 'Privacy Switch: ON' in line and current_state != 'ON':
                 logger.info("Received: Privacy Switch: ON")
                 set_iptables_rule(enable=False, config=config)
                 current_state = 'ON'
-            if 'Privacy Switch: OFF' in line and current_state != 'OFF':
+                update_state_file(current_state, config)
+                mqtt_client.update_state(current_state)
+                # Acknowledge state change to device
+                ser.write(b"ACK:ON\n")
+            elif 'Privacy Switch: OFF' in line and current_state != 'OFF':
                 logger.info("Received: Privacy Switch: OFF")
                 set_iptables_rule(enable=True, config=config)
                 current_state = 'OFF'
+                update_state_file(current_state, config)
+                mqtt_client.update_state(current_state)
+                # Acknowledge state change to device
+                ser.write(b"ACK:OFF\n")
             elif 'Trigger Host Reboot' in line:
                 logger.info("Got a Host reboot command! Rebooting System...")
                 reboot_host()
@@ -182,6 +301,9 @@ def monitor_serial(serial_port, config):
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             break
+
+    if mqtt_client and mqtt_client.client:
+        mqtt_client.client.loop_stop()
 
 if __name__ == "__main__":
     # Use argparse for command-line parameters

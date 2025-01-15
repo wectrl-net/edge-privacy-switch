@@ -39,7 +39,19 @@ else
     echo "edge-privacy-switch/requirements.txt not found! Skipping package installation."
 fi
 
-# Step 5: Set up systemd service
+# Step 5: Create necessary directories and set permissions
+echo "Creating state directory..."
+sudo mkdir -p /var/lib/edge-privacy-switch
+sudo chown root:root /var/lib/edge-privacy-switch
+sudo chmod 755 /var/lib/edge-privacy-switch
+
+# Step 6: Create log directory and file
+echo "Setting up logging..."
+sudo touch /var/log/edge-privacy-switch.log
+sudo chown root:root /var/log/edge-privacy-switch.log
+sudo chmod 644 /var/log/edge-privacy-switch.log
+
+# Step 7: Set up systemd service
 SERVICE_FILE="edge-privacy-switch-agent.service"
 
 if [ -f "$SERVICE_FILE" ]; then
@@ -59,5 +71,14 @@ if [ -f "$SERVICE_FILE" ]; then
 else
     echo "$SERVICE_FILE not found! Skipping service setup."
 fi
+
+# Step 8: Set up udev rules for serial device
+echo "Setting up udev rules for serial device..."
+cat << EOF | sudo tee /etc/udev/rules.d/99-edge-privacy-switch.rules
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="edge-privacy-switch", MODE="0666"
+EOF
+
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 
 echo "Setup complete!"

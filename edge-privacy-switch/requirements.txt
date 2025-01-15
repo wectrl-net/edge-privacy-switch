@@ -1,1 +1,11 @@
-pyserial
+# Serial communication
+pyserial>=3.5
+
+# Configuration management
+pyyaml>=6.0.1
+
+# MQTT client for ESPHome communication
+paho-mqtt>=1.6.1
+
+# Logging and system utilities
+python-dateutil>=2.8.2
