@@ -1,6 +1,8 @@
 esphome:
   name: m5-matrix
   friendly_name: m5-matrix
+  includes:
+    - uart_read_line_sensor.h
 
 esp32:
   board: m5stack-atom
@@ -44,24 +46,17 @@ uart:
   debug:
     after:
       delimiter: "\n"
-  on_message:
-    # Handle GET_STATE command
-    - pattern: "GET_STATE"
-      then:
-        - lambda: |-
-            bool state = id(privacy_switch).state;
-            id(uart_bus).write_str(("STATE:" + std::string(state ? "ON" : "OFF") + "\n").c_str());
 
-    # Handle ACK messages
-    - pattern: "ACK:(ON|OFF)"
-      then:
-        - lambda: |-
-            std::string message = id(uart_bus).get_message();
-            if (message.find("ACK:ON") != std::string::npos && !id(privacy_switch).state) {
-              id(privacy_switch).turn_on();
-            } else if (message.find("ACK:OFF") != std::string::npos && id(privacy_switch).state) {
-              id(privacy_switch).turn_off();
-            }
+# UART message handling through custom component
+text_sensor:
+  - platform: custom
+    lambda: |-
+      auto uart_reader = new UartReadLineSensor(id(uart_bus), id(privacy_switch));
+      App.register_component(uart_reader);
+      return {uart_reader};
+    text_sensors:
+      name: "UART Reader"
+      id: uart_reader
 
 sensor:
   - platform: wifi_signal
