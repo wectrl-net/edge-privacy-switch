@@ -1,0 +1,36 @@
+# Privacy Switch Configuration
+
+# Serial Communication Settings
+serial:
+  baud_rate: 115200
+  # Leave empty to auto-detect
+  port: ""
+
+# Actions to perform when privacy switch is enabled/disabled
+actions:
+  iptables:
+    enabled: true
+    internal_subnets:
+      - '10.0.0.0/8'
+      - '172.16.0.0/12'
+      - '192.168.0.0/16'
+    chains:
+      - 'INPUT'
+      - 'OUTPUT'
+      - 'FORWARD'
+
+  # Commands to execute on state change
+  commands:
+    privacy_on:
+      # Example: Stop services when privacy is enabled
+      - command: "systemctl stop nginx"
+        enabled: false
+      - command: "systemctl stop docker"
+        enabled: false
+    
+    privacy_off:
+      # Example: Start services when privacy is disabled
+      - command: "systemctl start nginx"
+        enabled: false
+      - command: "systemctl start docker"
+        enabled: false 

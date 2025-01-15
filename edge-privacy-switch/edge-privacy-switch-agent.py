@@ -4,6 +4,8 @@ import os
 import re
 import argparse
 import logging
+import yaml
+from pathlib import Path
 
 # Set up logging
 logging.basicConfig(
@@ -17,16 +19,65 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Define internal subnets typically used in private networks
-INTERNAL_SUBNETS = [
-    '10.0.0.0/8',
-    '172.16.0.0/12',
-    '192.168.0.0/16'
-]
+def load_or_create_config(config_path=None):
+    if config_path:
+        config_path = Path(config_path)
+    else:
+        config_path = Path(__file__).parent / 'config.yaml'
+    
+    # Default configuration
+    default_config = {
+        'serial': {
+            'baud_rate': 115200,
+            'port': ''
+        },
+        'actions': {
+            'iptables': {
+                'enabled': True,
+                'internal_subnets': [
+                    '10.0.0.0/8',
+                    '172.16.0.0/12',
+                    '192.168.0.0/16'
+                ],
+                'chains': ['INPUT', 'OUTPUT', 'FORWARD']
+            },
+            'commands': {
+                'privacy_on': [
+                    {'command': 'systemctl stop nginx', 'enabled': False},
+                    {'command': 'systemctl stop docker', 'enabled': False}
+                ],
+                'privacy_off': [
+                    {'command': 'systemctl start nginx', 'enabled': False},
+                    {'command': 'systemctl start docker', 'enabled': False}
+                ]
+            }
+        }
+    }
 
-CHAINS_JOIN = [
-    'INPUT', 'OUTPUT', 'FORWARD'
-]
+    try:
+        if not config_path.exists():
+            with open(config_path, 'w') as f:
+                yaml.dump(default_config, f, default_flow_style=False)
+            logger.info(f"Created default configuration file at {config_path}")
+            return default_config
+        
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+            logger.info("Configuration loaded successfully")
+            return config
+    except Exception as e:
+        logger.error(f"Error handling configuration file: {e}")
+        return default_config
+
+def execute_commands(commands):
+    for cmd_config in commands:
+        if cmd_config.get('enabled', False):
+            try:
+                cmd = cmd_config['command']
+                subprocess.run(cmd.split(), check=True)
+                logger.info(f"Successfully executed command: {cmd}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to execute command '{cmd}': {e}")
 
 def get_default_interface():
     try:
@@ -58,7 +109,11 @@ def find_serial_port():
         logger.error(f"Failed to list /dev/ devices: {e}")
         return None
 
-def set_iptables_rule(enable):
+def set_iptables_rule(enable, config):
+    if not config['actions']['iptables']['enabled']:
+        logger.info("IPTables rules are disabled in configuration")
+        return
+
     interface = get_default_interface()
     if not interface:
         logger.error("Cannot set iptables rule without a network interface.")
@@ -68,23 +123,27 @@ def set_iptables_rule(enable):
         if enable:
             # Remove the rules that block public IP access
             subprocess.run(['sudo', 'iptables', '-F', 'WECTRL_NETBLOCK'])
-            for chain in CHAINS_JOIN:
+            for chain in config['actions']['iptables']['chains']:
                 subprocess.run(['sudo', 'iptables', '-D', chain, '-j', 'WECTRL_NETBLOCK'])
             subprocess.run(['sudo', 'iptables', '-X', 'WECTRL_NETBLOCK'])
-
+            
+            # Execute privacy_off commands
+            execute_commands(config['actions']['commands']['privacy_off'])
             logger.info("Public Internet Enabled")
         else:
             # Add the rule to block public IP access while allowing LAN IPs
             subprocess.run(['sudo', 'iptables', '-N', 'WECTRL_NETBLOCK'])
 
-            for subnet in INTERNAL_SUBNETS:
+            for subnet in config['actions']['iptables']['internal_subnets']:
                 subprocess.run(['sudo', 'iptables', '-A', 'WECTRL_NETBLOCK', '-s', subnet, '-j', 'ACCEPT'])
 
             subprocess.run(['sudo', 'iptables', '-A', 'WECTRL_NETBLOCK', '-j', 'DROP'])
 
-            for chain in CHAINS_JOIN:
+            for chain in config['actions']['iptables']['chains']:
                 subprocess.run(['sudo', 'iptables', '-A', chain, '-j', 'WECTRL_NETBLOCK'])
-
+            
+            # Execute privacy_on commands
+            execute_commands(config['actions']['commands']['privacy_on'])
             logger.info("Public Internet Disabled")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to set iptables rule: {e}")
@@ -92,10 +151,10 @@ def set_iptables_rule(enable):
 def reboot_host():
     subprocess.call(["shutdown", "-r", "-t", "now"])
 
-def monitor_serial(serial_port, baud_rate):
+def monitor_serial(serial_port, config):
     try:
-        ser = serial.Serial(serial_port, baud_rate)
-        logger.info(f"Serial connection established on {serial_port} at {baud_rate} baud.")
+        ser = serial.Serial(serial_port, config['serial']['baud_rate'])
+        logger.info(f"Serial connection established on {serial_port} at {config['serial']['baud_rate']} baud.")
     except serial.SerialException as e:
         logger.error(f"Failed to open serial port {serial_port}: {e}")
         return
@@ -108,11 +167,11 @@ def monitor_serial(serial_port, baud_rate):
             logger.debug(f"Serial line received: {line}")
             if 'Privacy Switch: ON' in line and current_state != 'ON':
                 logger.info("Received: Privacy Switch: ON")
-                set_iptables_rule(enable=False)
+                set_iptables_rule(enable=False, config=config)
                 current_state = 'ON'
             if 'Privacy Switch: OFF' in line and current_state != 'OFF':
                 logger.info("Received: Privacy Switch: OFF")
-                set_iptables_rule(enable=True)
+                set_iptables_rule(enable=True, config=config)
                 current_state = 'OFF'
             elif 'Trigger Host Reboot' in line:
                 logger.info("Got a Host reboot command! Rebooting System...")
@@ -127,17 +186,22 @@ def monitor_serial(serial_port, baud_rate):
 if __name__ == "__main__":
     # Use argparse for command-line parameters
     parser = argparse.ArgumentParser(description="Monitor serial port and control internet access based on state.")
-    parser.add_argument('--baud_rate', type=int, default=int(os.getenv('BAUD_RATE', 115200)), help="Baud rate for the serial connection")
-    parser.add_argument('--serial_port', type=str, default=os.getenv('SERIAL_PORT', find_serial_port()), help="Serial port to use")
+    parser.add_argument('--config', type=str, help="Path to configuration file (optional)")
     
     args = parser.parse_args()
 
-    if not args.serial_port:
-        logger.error("No serial port found or specified.")
+    # Load configuration
+    config = load_or_create_config(args.config)
+    
+    # Get serial port from config or auto-detect
+    serial_port = config['serial']['port'] or find_serial_port()
+    
+    if not serial_port:
+        logger.error("No serial port found or specified in config.")
         exit(1)
 
     try:
-        monitor_serial(args.serial_port, args.baud_rate)
+        monitor_serial(serial_port, config)
     except Exception as e:
         logger.critical(f"Unhandled exception: {e}", exc_info=True)
         exit(1)
